@@ -56,33 +56,45 @@ func (u Uploader) handleSimpleType(_ context.Context, t core.SimpleType, filePat
 	return coreutils.MakeLiteralForSimpleType(t, string(b))
 }
 
+func (u Uploader) handleBlobNestedWalk(ctx context.Context, localPath string, toPath storage.DataReference) ([]dirFile, error) {
+	var files []dirFile
+	err := filepath.Walk(localPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			logger.Errorf(ctx, "encountered error when uploading multipart blob, %s", err)
+			return err
+		}
+		if info.IsDir() {
+			subFiles, err := u.handleBlobNestedWalk(ctx, path, toPath)
+			if err != nil {
+				return err
+			}
+			files = append(files, subFiles...)
+		} else {
+			ref, err := u.store.ConstructReference(ctx, toPath, info.Name())
+			if err != nil {
+				return err
+			}
+			files = append(files, dirFile{
+				path: path,
+				info: info,
+				ref:  ref,
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
 func (u Uploader) handleBlobType(ctx context.Context, localPath string, toPath storage.DataReference) (*core.Literal, error) {
 	fpath, info, err := IsFileReadable(localPath, true)
 	if err != nil {
 		return nil, err
 	}
 	if info.IsDir() {
-		var files []dirFile
-		err := filepath.Walk(localPath, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				logger.Errorf(ctx, "encountered error when uploading multipart blob, %s", err)
-				return err
-			}
-			if info.IsDir() {
-				logger.Warnf(ctx, "Currently nested directories are not supported in multipart blob uploads, for directory @ %s", path)
-			} else {
-				ref, err := u.store.ConstructReference(ctx, toPath, info.Name())
-				if err != nil {
-					return err
-				}
-				files = append(files, dirFile{
-					path: path,
-					info: info,
-					ref:  ref,
-				})
-			}
-			return nil
-		})
+		files, err := u.handleBlobNestedWalk(ctx, localPath, toPath)
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +140,7 @@ func (u Uploader) RecursiveUpload(ctx context.Context, vars *core.VariableMap, f
 	} else if info.IsDir() {
 		return fmt.Errorf("error file is a directory")
 	} else {
-		b, err := ioutil.ReadFile(errFile)
+		b, err := os.ReadFile(errFile)
 		if err != nil {
 			return err
 		}
